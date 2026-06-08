@@ -21,6 +21,7 @@ import xlsxwriter
 ROOT       = Path(__file__).parent
 DATA_FILE  = ROOT / "data" / "Tear Sheet 14032026.xlsx"
 OUTPUT_DIR = ROOT / "output"
+LOGO_FILE  = ROOT / "assets" / "gex_logo.png"
 
 # ─── Fund constants ───────────────────────────────────────────────────────────
 FUND_NAME_1     = "GREEN RENEWABLE STORAGE ENERGY MARKET"
@@ -302,9 +303,10 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
     row = 0
 
     # ── DATE + LOGO ───────────────────────────────────────────────────────────
+    # Rows 0-2 form the header area; logo spans all three rows on the right.
     ws.set_row(row, 14)
     L(row, date_str, fmt["date_line"])
-    R(row, "GEX ×",  fmt["logo"])
+    R(row, "", fmt["body_r"])
     row += 1
 
     # ── FUND NAME ─────────────────────────────────────────────────────────────
@@ -314,6 +316,24 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
     ws.set_row(row, 26)
     FULL(row, FUND_NAME_2, fmt["fund_name"])
     row += 1
+
+    # Insert GEX logo top-right (spans date + both name rows = ~66pt tall)
+    if LOGO_FILE.exists():
+        # Logo is 720×693 px; target ~58pt tall × ~60pt wide in the right panel
+        # xlsxwriter insert_image scales are relative to original size
+        target_h_px = 70   # pixels at 96dpi
+        scale = target_h_px / 693
+        ws.insert_image(
+            0, RE,          # anchor at top of right panel
+            str(LOGO_FILE),
+            {
+                "x_scale":   scale,
+                "y_scale":   scale,
+                "x_offset":  -68,   # nudge left so it sits inside the panel
+                "y_offset":  2,
+                "positioning": 1,   # move with cells, don't size with them
+            },
+        )
 
     # ── DIVIDER ───────────────────────────────────────────────────────────────
     ws.set_row(row, 4)
@@ -595,7 +615,6 @@ def _build_formats(wb) -> dict:
 
     return {
         "date_line":   mk(font_size=9,  font_color=C_GREY,  align="left",  valign="vcenter"),
-        "logo":        mk(font_size=14, font_color=C_GREEN, bold=True, align="right", valign="vcenter"),
         "fund_name":   mk(font_size=18, font_color=C_GREEN, bold=True, align="left",  valign="vcenter"),
         "divider_bar": mk(bg_color=C_GREEN, font_color=C_GREEN),
 
