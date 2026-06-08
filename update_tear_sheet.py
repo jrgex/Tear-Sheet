@@ -152,8 +152,8 @@ def _load_workbook(wb, filename: str) -> pd.DataFrame:
     """Dispatch to the right loader based on sheet names present."""
     if "Table 1" in wb.sheetnames:
         return _load_tear_sheet_format(wb["Table 1"])
-    if "_data" in wb.sheetnames:
-        return _load_data_sheet(wb["_data"])
+    if "Data" in wb.sheetnames:
+        return _load_data_sheet(wb["Data"])
     if "Tear Sheet" in wb.sheetnames:
         return _load_output_sheet(wb["Tear Sheet"])
     return _load_list_format(wb.active)
@@ -419,11 +419,12 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
     wb = xlsxwriter.Workbook(str(output_path), {"nan_inf_to_errors": True})
 
     bm = bm_stats or {}
-    ds = wb.add_worksheet("_data")
-    ds.hide()
-    _write_chart_data(wb, ds, df, stats, bm)
 
-    ws = wb.add_worksheet("Tear Sheet")
+    ws = wb.add_worksheet("Tear Sheet")   # tab 1 — visible first
+    ds = wb.add_worksheet("Data")         # tab 2 — chart source data
+    ws.activate()                          # open on Tear Sheet by default
+
+    _write_chart_data(wb, ds, df, stats, bm)
     ws.hide_gridlines(2)
     ws.set_paper(9)        # A4
     ws.set_portrait()
@@ -739,8 +740,8 @@ def _make_vami_chart(wb, ds, stats: dict, bm: dict):
     # Fund series
     chart.add_series({
         "name":       FUND_NAME_SHORT,
-        "categories": ["_data", 1, 0, n, 0],
-        "values":     ["_data", 1, 1, n, 1],
+        "categories": ["Data", 1, 0, n, 0],
+        "values":     ["Data", 1, 1, n, 1],
         "line":       {"color": C_GREEN, "width": 2.0},
         "marker":     {"type": "none"},
     })
@@ -749,8 +750,8 @@ def _make_vami_chart(wb, ds, stats: dict, bm: dict):
         nb = len(bm["vami"])
         chart.add_series({
             "name":       BENCHMARK_NAME,
-            "categories": ["_data", 1, 6, nb, 6],
-            "values":     ["_data", 1, 7, nb, 7],
+            "categories": ["Data", 1, 6, nb, 6],
+            "values":     ["Data", 1, 7, nb, 7],
             "line":       {"color": "#9E9E9E", "width": 1.25, "dash_type": "dash"},
             "marker":     {"type": "none"},
         })
@@ -781,8 +782,8 @@ def _make_monthly_returns_chart(wb, ds, stats: dict):
     chart = wb.add_chart({"type": "column"})
     chart.add_series({
         "name":       FUND_NAME_SHORT,
-        "categories": ["_data", 1, 3, n, 3],
-        "values":     ["_data", 1, 4, n, 4],
+        "categories": ["Data", 1, 3, n, 3],
+        "values":     ["Data", 1, 4, n, 4],
         "fill":       {"color": C_GREEN},
         "border":     {"color": C_GREEN},
         "gap":        40,
