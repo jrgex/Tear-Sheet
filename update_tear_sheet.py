@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 BEATS Tear Sheet Generator
-Reads 'data/Beats data .xlsx', computes performance statistics,
+Reads the source data sheet, computes performance statistics,
 and writes a styled Excel tear sheet to output/.
+
+Supported source formats:
+  1. Tear Sheet xlsx  – 'Table 1' sheet, year×month grid (values in %)
+  2. Beats data xlsx  – two-column list: Month | decimal return
 """
 
 import sys
@@ -17,7 +21,7 @@ import xlsxwriter
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
-DATA_FILE = ROOT / "data" / "Beats data .xlsx"
+DATA_FILE = ROOT / "data" / "Tear Sheet 14032026.xlsx"   # current source
 OUTPUT_DIR = ROOT / "output"
 
 # ─── Fund constants (static) ──────────────────────────────────────────────────
@@ -81,39 +85,119 @@ MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_data(filepath: Path) -> pd.DataFrame:
-    # Find the header row: scan for the first row that has 'Month' or 'Beats'
-    raw = pd.read_excel(filepath, header=None)
-    header_row = 0
-    for i, row in raw.iterrows():
-        vals = [str(v).strip().lower() for v in row if pd.notna(v)]
-        if any("month" in v or "beat" in v or "return" in v for v in vals):
-            header_row = i
-            break
+    """Load monthly returns from either source format into a normalised DataFrame.
 
-    df = pd.read_excel(filepath, header=header_row)
-    df = df.dropna(how="all", axis=1).dropna(how="all", axis=0)
-    df.columns = [str(c).strip() for c in df.columns]
+    Returns columns: month (Timestamp), return (decimal, e.g. 0.0144 = 1.44%)
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(str(filepath), data_only=True)
 
-    # Identify month and return columns by name pattern
-    month_col = next(
-        (c for c in df.columns if "month" in c.lower() or "date" in c.lower()), None
+    # ── Format 1: Tear Sheet xlsx with 'Table 1' sheet ────────────────────────
+    if "Table 1" in wb.sheetnames:
+        return _load_tear_sheet_format(wb["Table 1"])
+
+    # ── Format 2: two-column list (Month | decimal return) ────────────────────
+    ws = wb.active
+    return _load_list_format(ws)
+
+
+def _load_tear_sheet_format(ws) -> pd.DataFrame:
+    """Parse the year×month grid in the 'Table 1' sheet.
+
+    Scans for the 'MONTHLY PERFORMANCE' marker, reads the month-name header
+    row to build a column-index→month-number map, then reads each year row.
+    Values in the sheet are already in % (e.g. 1.44 = 1.44%) so we divide
+    by 100 to get decimals.
+    """
+    rows = list(ws.iter_rows(values_only=True))
+
+    # Find MONTHLY PERFORMANCE section
+    perf_row = next(
+        (i for i, r in enumerate(rows)
+         if any(isinstance(v, str) and "MONTHLY PERFORMANCE" in v for v in r if v)),
+        None,
     )
-    beats_col = next(
-        (c for c in df.columns if "beat" in c.lower() or "return" in c.lower()), None
+    if perf_row is None:
+        raise ValueError("Cannot find 'MONTHLY PERFORMANCE' section in Table 1 sheet")
+
+    # Next non-empty row is the month-name header
+    hdr_row = next(
+        (i for i in range(perf_row + 1, len(rows))
+         if any(v is not None for v in rows[i])),
+        None,
     )
+    if hdr_row is None:
+        raise ValueError("Cannot find month header row after MONTHLY PERFORMANCE")
 
-    # Fallback: use positional columns if names not recognised
-    if month_col is None or beats_col is None:
-        cols = df.columns.tolist()
-        month_col = cols[0] if month_col is None else month_col
-        beats_col = cols[1] if beats_col is None else beats_col
+    month_abbrs = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
+    col_to_month: dict[int, int] = {}      # column index → month number (1-12)
+    year_col: int | None = None
 
-    df = df[[month_col, beats_col]].copy()
-    df.columns = ["month", "return"]
-    df["month"] = pd.to_datetime(df["month"], errors="coerce")
-    df["return"] = pd.to_numeric(df["return"], errors="coerce")
-    df = df.dropna().sort_values("month").reset_index(drop=True)
+    for ci, val in enumerate(rows[hdr_row]):
+        if val is None:
+            continue
+        s = str(val).strip().lower()
+        for mi, abbr in enumerate(month_abbrs):
+            if s == abbr:
+                col_to_month[ci] = mi + 1
+                break
+        if s == "year":
+            year_col = ci   # ignore annual total column
+
+    # Read data rows (rows that start with a 4-digit year)
+    records = []
+    for row in rows[hdr_row + 1:]:
+        if row[0] is None:
+            continue
+        try:
+            year = int(row[0])
+        except (TypeError, ValueError):
+            continue
+        if not (2000 <= year <= 2100):
+            continue
+        for ci, month_num in col_to_month.items():
+            val = row[ci] if ci < len(row) else None
+            if val is None:
+                continue
+            try:
+                pct = float(val)
+            except (TypeError, ValueError):
+                continue
+            records.append({
+                "month":  pd.Timestamp(year=year, month=month_num, day=1),
+                "return": pct / 100.0,   # % → decimal
+            })
+
+    df = pd.DataFrame(records).sort_values("month").reset_index(drop=True)
     return df
+
+
+def _load_list_format(ws) -> pd.DataFrame:
+    """Parse a two-column Month | Return list (values already decimal)."""
+    rows = list(ws.iter_rows(values_only=True))
+
+    # Find header row containing 'month' or 'beats'
+    hdr = next(
+        (i for i, r in enumerate(rows)
+         if any(isinstance(v, str) and
+                ("month" in v.lower() or "beat" in v.lower() or "return" in v.lower())
+                for v in r if v)),
+        0,
+    )
+
+    records = []
+    for row in rows[hdr + 1:]:
+        vals = [v for v in row if v is not None]
+        if len(vals) < 2:
+            continue
+        try:
+            month = pd.Timestamp(vals[0])
+            ret   = float(vals[1])
+        except (TypeError, ValueError):
+            continue
+        records.append({"month": month, "return": ret})
+
+    return pd.DataFrame(records).sort_values("month").reset_index(drop=True)
 
 
 def build_stats(df: pd.DataFrame) -> dict:
