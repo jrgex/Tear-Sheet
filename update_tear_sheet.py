@@ -491,21 +491,22 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
     FULL(row, FUND_NAME_2, fmt["fund_name"])
     row += 1
 
-    # Insert GEX logo top-right (spans date + both name rows = ~66pt tall)
+    # Insert GEX logo top-right — exact target: 2.27 cm wide × 2.15 cm tall
+    # Logo is 720×693 px at 288 DPI.  Natural display = w/dpi*2.54 cm
+    # x_scale = target_cm * dpi / (px * 2.54)
     if LOGO_FILE.exists():
-        # Logo is 720×693 px; target ~58pt tall × ~60pt wide in the right panel
-        # xlsxwriter insert_image scales are relative to original size
-        target_h_px = 70   # pixels at 96dpi
-        scale = target_h_px / 693
+        IMG_DPI = 288
+        logo_x_scale = 2.27 * IMG_DPI / (720 * 2.54)   # = 0.3576
+        logo_y_scale = 2.15 * IMG_DPI / (693 * 2.54)   # = 0.3518
         ws.insert_image(
-            0, RE,          # anchor at top of right panel
+            0, RE,
             str(LOGO_FILE),
             {
-                "x_scale":   scale,
-                "y_scale":   scale,
-                "x_offset":  -68,   # nudge left so it sits inside the panel
+                "x_scale":   logo_x_scale,
+                "y_scale":   logo_y_scale,
+                "x_offset":  -82,
                 "y_offset":  2,
-                "positioning": 1,   # move with cells, don't size with them
+                "positioning": 1,
             },
         )
 
@@ -550,7 +551,7 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
     row += 1
 
     # Stat row 2: values
-    ws.set_row(row, 26)
+    ws.set_row(row, 18)
     L(row, "", fmt["body_l"])
     RL(row, f"{s['three_mo_ror']:.2f}%", fmt["stat_num"])
     RV(row, f"{s['ytd']:.2f}%",          fmt["stat_num"])
@@ -564,7 +565,7 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
     row += 1
 
     # Stat row 4: values
-    ws.set_row(row, 26)
+    ws.set_row(row, 18)
     L(row, STRATEGY_LINES[3], fmt["body_s"])
     RL(row, f"{s['total_return']:.2f}%", fmt["stat_num_lg"])
     RV(row, f"{s['six_mo_ror']:.2f}%",   fmt["stat_num"])
@@ -647,7 +648,7 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
         FULL(row, "", fmt["body_l"])
         row += 1
 
-    mr_chart = _make_monthly_returns_chart(wb, ds, stats)
+    mr_chart = _make_monthly_returns_chart(wb, ds, stats, bm)
     ws.insert_chart(mr_anchor, LS, mr_chart,
                     {"x_offset": 0, "y_offset": 2, "x_scale": 1.0, "y_scale": 1.0})
 
@@ -733,6 +734,19 @@ def _write_chart_data(wb, ds, df: pd.DataFrame, stats: dict, bm: dict):
                          if hasattr(stats["vami_dates"][i - 1], "strftime") else "")
                 ds.write(i, 7, round(v, 2))
 
+    # Benchmark monthly returns (cols 9-10) — aligned to fund monthly dates
+    if bm.get("monthly_table"):
+        bm_by_month = {
+            pd.Timestamp(year=y, month=m, day=1): pct
+            for y, months in bm["monthly_table"].items()
+            for m, pct in months.items()
+        }
+        ds.write(0, 9, "Date");  ds.write(0, 10, BENCHMARK_NAME)
+        for i, row in df.iterrows():
+            val = bm_by_month.get(row["month"])
+            ds.write(i + 1, 9,  row["month"].strftime("%b %Y"))
+            ds.write(i + 1, 10, round(val, 4) if val is not None else "")
+
 
 def _make_vami_chart(wb, ds, stats: dict, bm: dict):
     n = len(stats["vami"])
@@ -777,10 +791,12 @@ def _make_vami_chart(wb, ds, stats: dict, bm: dict):
     return chart
 
 
-def _make_monthly_returns_chart(wb, ds, stats: dict):
+def _make_monthly_returns_chart(wb, ds, stats: dict, bm: dict):
     n = len(stats["all_returns"])
-    chart = wb.add_chart({"type": "column"})
-    chart.add_series({
+
+    # Column chart — fund monthly returns
+    col_chart = wb.add_chart({"type": "column"})
+    col_chart.add_series({
         "name":       FUND_NAME_SHORT,
         "categories": ["Data", 1, 3, n, 3],
         "values":     ["Data", 1, 4, n, 4],
@@ -788,13 +804,13 @@ def _make_monthly_returns_chart(wb, ds, stats: dict):
         "border":     {"color": C_GREEN},
         "gap":        40,
     })
-    chart.set_title({"none": True})
-    chart.set_x_axis({
+    col_chart.set_title({"none": True})
+    col_chart.set_x_axis({
         "name": "", "num_font": {"size": 6, "color": C_GREY},
         "line": {"color": C_BORDER_LIGHT},
         "major_gridlines": {"visible": False},
     })
-    chart.set_y_axis({
+    col_chart.set_y_axis({
         "name": "Monthly Return (%)",
         "name_font": {"size": 7, "color": C_GREY},
         "num_font":  {"size": 7, "color": C_GREY},
@@ -802,11 +818,24 @@ def _make_monthly_returns_chart(wb, ds, stats: dict):
         "major_gridlines": {"visible": True,
                             "line": {"color": "#EEEEEE", "dash_type": "dash"}},
     })
-    chart.set_legend({"position": "bottom", "font": {"size": 7, "color": C_GREY}})
-    chart.set_chartarea({"border": {"color": C_BORDER_LIGHT}, "fill": {"color": C_WHITE}})
-    chart.set_plotarea({"fill": {"color": C_WHITE}})
-    chart.set_size({"width": 755, "height": 210})
-    return chart
+    col_chart.set_legend({"position": "bottom", "font": {"size": 7, "color": C_GREY}})
+    col_chart.set_chartarea({"border": {"color": C_BORDER_LIGHT}, "fill": {"color": C_WHITE}})
+    col_chart.set_plotarea({"fill": {"color": C_WHITE}})
+    col_chart.set_size({"width": 755, "height": 210})
+
+    # Line overlay — EWA benchmark monthly returns
+    if bm.get("monthly_table"):
+        line_chart = wb.add_chart({"type": "line"})
+        line_chart.add_series({
+            "name":       BENCHMARK_NAME,
+            "categories": ["Data", 1, 9, n, 9],
+            "values":     ["Data", 1, 10, n, 10],
+            "line":       {"color": "#9E9E9E", "width": 1.5, "dash_type": "dash"},
+            "marker":     {"type": "none"},
+        })
+        col_chart.combine(line_chart)
+
+    return col_chart
 
 
 # ─── Formats ──────────────────────────────────────────────────────────────────
@@ -833,7 +862,8 @@ def _build_formats(wb) -> dict:
         "bullet":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
         "strat_title": mk(font_size=9,  font_color=C_BLACK, bold=True, italic=True,
                            align="left", valign="vcenter"),
-        "body_s":      mk(font_size=8.5, font_color=C_BLACK, align="left", valign="vcenter"),
+        "body_s":      mk(font_size=8.5, font_color=C_BLACK, align="left", valign="vcenter",
+                          text_wrap=True),
         "body_l":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
         "body_r":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
 
@@ -841,9 +871,9 @@ def _build_formats(wb) -> dict:
                            align="left", valign="vcenter"),
 
         "stat_lbl":    mk(font_size=8,  font_color=C_GREY,  align="left", valign="bottom"),
-        "stat_num":    mk(font_size=18, font_color=C_BLACK, bold=True,
+        "stat_num":    mk(font_size=12, font_color=C_BLACK, bold=True,
                            align="left", valign="vcenter"),
-        "stat_num_lg": mk(font_size=20, font_color=C_BLACK, bold=True,
+        "stat_num_lg": mk(font_size=12, font_color=C_BLACK, bold=True,
                            align="left", valign="vcenter"),
 
         "gi_lbl":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter",
