@@ -1,0 +1,48 @@
+name: Generate Tear Sheet
+
+on:
+  workflow_dispatch:       # ← the "Run workflow" button in GitHub Actions
+    inputs:
+      message:
+        description: "Optional commit message note"
+        required: false
+        default: ""
+
+  push:
+    paths:
+      - "data/**"          # also auto-runs whenever a data file is updated
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # needed to push the output back to the repo
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate tear sheet
+        run: python update_tear_sheet.py
+
+      - name: Commit & push output
+        run: |
+          git config user.email "jr@greenexchange.com.au"
+          git config user.name  "BEATS Generator"
+          git add output/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            NOTE="${{ github.event.inputs.message }}"
+            MSG="Generate tear sheet $(date +'%b %Y')${NOTE:+ — $NOTE}"
+            git commit -m "$MSG"
+            git push
+          fi

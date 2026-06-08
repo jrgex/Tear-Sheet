@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .env
-output/
+output/*.tmp
 *.egg-info/
 dist/
 .DS_Store
