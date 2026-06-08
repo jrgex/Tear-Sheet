@@ -25,11 +25,8 @@ ROOT       = Path(__file__).parent
 OUTPUT_DIR = ROOT / "output"
 LOGO_FILE  = ROOT / "assets" / "gex_logo.png"
 
-# All files in data/ are merged in order — later files override earlier ones
-# for any overlapping months, so keep the most-current file last.
 DATA_FILES = [
-    ROOT / "data" / "Tear Sheet 14032026.xlsx",   # Jul 2022 → Feb 2026
-    ROOT / "data" / "Tear_Sheet_Apr2026.xlsx",    # Jan 2023 → Apr 2026 (updated)
+    ROOT / "data" / "Beats data .xlsx",
 ]
 
 # ─── Fund constants ───────────────────────────────────────────────────────────
