@@ -44,5 +44,6 @@ jobs:
             NOTE="${{ github.event.inputs.message }}"
             MSG="Generate tear sheet $(date +'%b %Y')${NOTE:+ — $NOTE}"
             git commit -m "$MSG"
+            git pull --rebase origin main
             git push
           fi
