@@ -862,8 +862,7 @@ def _build_formats(wb) -> dict:
         "bullet":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
         "strat_title": mk(font_size=9,  font_color=C_BLACK, bold=True, italic=True,
                            align="left", valign="vcenter"),
-        "body_s":      mk(font_size=8.5, font_color=C_BLACK, align="left", valign="vcenter",
-                          text_wrap=True),
+        "body_s":      mk(font_size=8.5, font_color=C_BLACK, align="left", valign="vcenter"),
         "body_l":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
         "body_r":      mk(font_size=9,  font_color=C_BLACK, align="left", valign="vcenter"),
 
