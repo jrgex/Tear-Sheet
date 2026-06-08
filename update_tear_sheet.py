@@ -17,6 +17,9 @@ import numpy as np
 import pandas as pd
 import xlsxwriter
 
+BENCHMARK_TICKER  = "EWA"
+BENCHMARK_NAME    = "iShares MSCI Australia ETF"
+
 # ─── Paths ────────────────────────────────────────────────────────────────────
 ROOT       = Path(__file__).parent
 OUTPUT_DIR = ROOT / "output"
@@ -292,6 +295,71 @@ def _load_list_format(ws) -> pd.DataFrame:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Benchmark (EWA)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fetch_benchmark(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Download EWA monthly returns aligned to the fund date range."""
+    try:
+        import yfinance as yf
+        raw = yf.download(
+            BENCHMARK_TICKER,
+            start=(start - pd.DateOffset(months=2)).strftime("%Y-%m-%d"),
+            end=(end   + pd.DateOffset(months=2)).strftime("%Y-%m-%d"),
+            interval="1mo",
+            auto_adjust=True,
+            progress=False,
+        )
+        if raw.empty:
+            raise ValueError("Empty response")
+
+        # Flatten MultiIndex if present
+        close = raw["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+
+        # Normalise index to first day of each month
+        close.index = pd.to_datetime(close.index).to_period("M").to_timestamp()
+        close = close.sort_index()
+
+        rets = close.pct_change().dropna()
+        df   = pd.DataFrame({"month": rets.index, "return": rets.values})
+        df   = df[(df["month"] >= start) & (df["month"] <= end)].reset_index(drop=True)
+        return df
+
+    except Exception as exc:
+        print(f"  Warning: could not fetch {BENCHMARK_TICKER}: {exc}")
+        return pd.DataFrame(columns=["month", "return"])
+
+
+def build_benchmark_stats(bm_df: pd.DataFrame, fund_vami_dates: list) -> dict:
+    """Compute benchmark VAMI (starting at 1000) aligned to fund dates."""
+    if bm_df.empty:
+        return {"vami": [], "annual_rets": {}, "monthly_table": {}}
+
+    bm_by_month = {row["month"]: row["return"] for _, row in bm_df.iterrows()}
+
+    # Build VAMI aligned to fund's date axis
+    vami = [1000.0]
+    for date in fund_vami_dates[1:]:        # fund_vami_dates[0] is the starting point
+        ret = bm_by_month.get(date)
+        vami.append(vami[-1] * (1 + ret) if ret is not None else None)
+
+    # Annual returns
+    monthly_table: dict[int, dict] = {}
+    for _, row in bm_df.iterrows():
+        y, m = row["month"].year, row["month"].month
+        monthly_table.setdefault(y, {})[m] = row["return"] * 100
+
+    annual_rets = {}
+    for y, months in monthly_table.items():
+        r_list = [months[m] / 100 for m in sorted(months)]
+        annual_rets[y] = (np.prod([1 + r for r in r_list]) - 1) * 100
+
+    return {"vami": vami, "annual_rets": annual_rets, "monthly_table": monthly_table}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Statistics
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -346,12 +414,14 @@ def build_stats(df: pd.DataFrame) -> dict:
 #  Excel generation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
+def write_excel(df: pd.DataFrame, stats: dict, output_path: Path,
+                bm_stats: dict | None = None):
     wb = xlsxwriter.Workbook(str(output_path), {"nan_inf_to_errors": True})
 
+    bm = bm_stats or {}
     ds = wb.add_worksheet("_data")
     ds.hide()
-    _write_chart_data(wb, ds, df, stats)
+    _write_chart_data(wb, ds, df, stats, bm)
 
     ws = wb.add_worksheet("Tear Sheet")
     ws.hide_gridlines(2)
@@ -557,7 +627,7 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
         row += 1
 
     # Embed VAMI chart (left panel only)
-    vami_chart = _make_vami_chart(wb, ds, stats)
+    vami_chart = _make_vami_chart(wb, ds, stats, bm)
     ws.insert_chart(vami_anchor, LS, vami_chart,
                     {"x_offset": 0, "y_offset": 2, "x_scale": 1.0, "y_scale": 1.0})
 
@@ -589,16 +659,19 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
     row += 1
 
     # Table header row
+    has_bm = bool(bm.get("annual_rets"))
     ws.set_row(row, 16)
-    ws.write(row, T_YEAR, "",    fmt["th"])   # Year header
+    ws.write(row, T_YEAR, "", fmt["th"])
     for mi, mn in enumerate(MONTH_NAMES):
         ws.write(row, T_JAN + mi, mn, fmt["th"])
-    ws.merge_range(row, T_ANN_S, row, T_ANN_E, "Year Return", fmt["th"])
+    ws.write(row, T_ANN_S, "Year Return", fmt["th"])
+    ws.write(row, T_ANN_E, BENCHMARK_TICKER if has_bm else "", fmt["th"])
     row += 1
 
     # Table data rows
     mt = stats["monthly_table"]
     ar = stats["annual_rets"]
+    bm_ar = bm.get("annual_rets", {})
     for yi, year in enumerate(sorted(mt.keys(), reverse=True)):
         ws.set_row(row, 14)
         alt = yi % 2 == 1
@@ -611,12 +684,15 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
             else:
                 ws.write_blank(row, c, None, fmt["te_alt" if alt else "te"])
         ann = ar.get(year)
-        if ann is not None:
-            ws.merge_range(row, T_ANN_S, row, T_ANN_E,
-                           round(ann, 2), _rf(wb, ann, alt, bold=True))
-        else:
-            ws.merge_range(row, T_ANN_S, row, T_ANN_E, "",
-                           fmt["te_alt" if alt else "te"])
+        ws.write(row, T_ANN_S,
+                 round(ann, 2) if ann is not None else "",
+                 _rf(wb, ann, alt, bold=True) if ann is not None
+                 else fmt["te_alt" if alt else "te"])
+        bm_ann = bm_ar.get(year)
+        ws.write(row, T_ANN_E,
+                 round(bm_ann, 2) if bm_ann is not None else "",
+                 _rf(wb, bm_ann, alt) if bm_ann is not None
+                 else fmt["te_alt" if alt else "te"])
         row += 1
 
     # ── FOOTER ────────────────────────────────────────────────────────────────
@@ -634,21 +710,33 @@ def write_excel(df: pd.DataFrame, stats: dict, output_path: Path):
 
 # ─── Chart data ───────────────────────────────────────────────────────────────
 
-def _write_chart_data(wb, ds, df: pd.DataFrame, stats: dict):
-    ds.write(0, 0, "Date");        ds.write(0, 1, "VAMI")
+def _write_chart_data(wb, ds, df: pd.DataFrame, stats: dict, bm: dict):
+    # Fund VAMI (cols 0-1)
+    ds.write(0, 0, "Date");  ds.write(0, 1, FUND_NAME_SHORT)
     for i, (d, v) in enumerate(zip(stats["vami_dates"], stats["vami"]), 1):
         ds.write(i, 0, d.strftime("%b %Y") if hasattr(d, "strftime") else str(d))
         ds.write(i, 1, round(v, 2))
 
-    ds.write(0, 3, "Date");        ds.write(0, 4, "Return (%)")
+    # Fund monthly returns (cols 3-4)
+    ds.write(0, 3, "Date");  ds.write(0, 4, "Fund Return (%)")
     for i, row in df.iterrows():
         ds.write(i + 1, 3, row["month"].strftime("%b %Y"))
         ds.write(i + 1, 4, round(row["return"] * 100, 4))
 
+    # Benchmark VAMI (cols 6-7) — same date labels as fund (col 0)
+    if bm.get("vami"):
+        ds.write(0, 6, "Date");  ds.write(0, 7, BENCHMARK_NAME)
+        for i, v in enumerate(bm["vami"], 1):
+            if v is not None:
+                ds.write(i, 6, stats["vami_dates"][i - 1].strftime("%b %Y")
+                         if hasattr(stats["vami_dates"][i - 1], "strftime") else "")
+                ds.write(i, 7, round(v, 2))
 
-def _make_vami_chart(wb, ds, stats: dict):
+
+def _make_vami_chart(wb, ds, stats: dict, bm: dict):
     n = len(stats["vami"])
     chart = wb.add_chart({"type": "line"})
+    # Fund series
     chart.add_series({
         "name":       FUND_NAME_SHORT,
         "categories": ["_data", 1, 0, n, 0],
@@ -656,6 +744,16 @@ def _make_vami_chart(wb, ds, stats: dict):
         "line":       {"color": C_GREEN, "width": 2.0},
         "marker":     {"type": "none"},
     })
+    # Benchmark series
+    if bm.get("vami"):
+        nb = len(bm["vami"])
+        chart.add_series({
+            "name":       BENCHMARK_NAME,
+            "categories": ["_data", 1, 6, nb, 6],
+            "values":     ["_data", 1, 7, nb, 7],
+            "line":       {"color": "#9E9E9E", "width": 1.25, "dash_type": "dash"},
+            "marker":     {"type": "none"},
+        })
     chart.set_title({"none": True})
     chart.set_x_axis({
         "name": "", "num_font": {"size": 7, "color": C_GREY},
@@ -830,8 +928,16 @@ def main():
     fname  = f"Tear_Sheet_{latest.strftime('%b%Y')}.xlsx"
     out    = OUTPUT_DIR / fname
 
+    print(f"Fetching benchmark ({BENCHMARK_TICKER}) …")
+    bm_df    = fetch_benchmark(df["month"].iloc[0], latest)
+    bm_stats = build_benchmark_stats(bm_df, stats["vami_dates"])
+    if bm_df.empty:
+        print("  Benchmark unavailable — chart will show fund only.")
+    else:
+        print(f"  {BENCHMARK_TICKER}: {len(bm_df)} months fetched")
+
     print("Building tear sheet …")
-    write_excel(df, stats, out)
+    write_excel(df, stats, out, bm_stats)
 
     print()
     print("  Total Return Cumulative :", f"{stats['total_return']:.2f}%")
